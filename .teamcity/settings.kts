@@ -22,14 +22,14 @@ project {
         password("JSON_KEY_FILE", "", label = "Google Play JSON key path")
     }
 
-    vcsRoot(GitVcsRoot({
-        id("AndroidRepo")
-        name = "Android Repo"
-        url = "%REPO_URL%"
-        branch = "refs/heads/%BRANCH%"
-        branchSpec = "+:refs/heads/*"
-        checkoutPolicy = GitVcsRoot.CheckoutPolicy.ON_AGENT
-    }))
+        vcsRoot(GitVcsRoot({
+            id("AndroidRepo")
+            name = "Android Repo"
+            url = "%REPO_URL%"
+            branch = "refs/heads/%BRANCH%"
+            branchSpec = "+:refs/heads/*"
+            // checkoutPolicy = GitVcsRoot.CheckoutPolicy.ON_AGENT   <-- прибрати!
+        }))
 
     buildType(FastlaneRelease)
 }
@@ -37,10 +37,11 @@ project {
 object FastlaneRelease : BuildType({
     name = "Android • Fastlane Build/Release"
 
-    vcs {
-        root(DslContext.settingsRoot)   // використовуємо поточний репозиторій
-        checkoutMode = CheckoutMode.ON_AGENT
-    }
+        vcs {
+            root(DslContext.settingsRoot)
+            checkoutMode = CheckoutMode.ON_AGENT
+        }
+
 
     artifactRules = "workspace/** => artifacts.zip"
 
