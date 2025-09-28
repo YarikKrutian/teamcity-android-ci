@@ -1,0 +1,23 @@
+json_key_file(ENV['JSON_KEY_FILE'])
+
+for_platform :android do
+  lanes = {
+    release_ng: 'ng.jiji.app',
+    release_ke: 'com.olx.ssa.ke',
+    release_ug: 'com.olx.ssa.ug',
+    release_gh: 'com.olx.ssa.gh',
+    release_tz: 'com.olx.ssa',
+    release_et: 'et.jiji.app',
+    release_lk: 'lk.jiji.app',
+    release_bd: 'bd.jiji.app',
+    release_ci: 'ci.jiji.app',
+    release_sn: 'sn.jiji.app',
+    release_pk: 'pk.jiji.app',
+    release_cd: 'cd.jiji.app'
+  }
+  lanes.each do |lane, package|
+    for_lane lane do
+      package_name package
+    end
+  end
+end

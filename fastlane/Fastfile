@@ -1,0 +1,160 @@
+require 'fileutils'
+require 'json'
+
+default_platform(:android)
+
+platform :android do
+  PROJECT_ROOT = File.expand_path('..', __dir__)
+  FASTLANE_DIR = __dir__
+  DEFAULT_CHANGELOG_PATH = File.join(FASTLANE_DIR, 'metadata', 'android', 'en-GB', 'changelogs', 'default.txt')
+
+  COUNTRIES = {
+    'tz' => 'com.olx.ssa',
+    'et' => 'et.jiji.app',
+    'gh' => 'com.olx.ssa.gh',
+    'ke' => 'com.olx.ssa.ke',
+    'ng' => 'ng.jiji.app',
+    'ug' => 'com.olx.ssa.ug',
+    'lk' => 'lk.jiji.app',
+    'bd' => 'bd.jiji.app',
+    'ci' => 'ci.jiji.app',
+    'sn' => 'sn.jiji.app',
+    'pk' => 'pk.jiji.app',
+    'cd' => 'cd.jiji.app'
+  }.freeze
+
+  # ---------------------------
+  # Helpers
+  # ---------------------------
+  def get_version_code!(opts = {})
+    raw = (opts[:app_version_code] || ENV['APP_VERSION_CODE']).to_s.strip
+    UI.user_error!("Version code is required") if raw.empty?
+    normalized = raw.gsub('_', '')
+    UI.user_error!("Bad version code: #{raw}") unless normalized =~ /^\d+$/
+    vc = normalized.to_i
+    UI.user_error!("Version code must be > 0") unless vc > 0
+    vc
+  end
+
+  def read_default_whatsnew!
+    UI.user_error!("Changelog not found: #{DEFAULT_CHANGELOG_PATH}") unless File.exist?(DEFAULT_CHANGELOG_PATH)
+    text = File.read(DEFAULT_CHANGELOG_PATH, mode: "r:BOM|UTF-8").to_s.gsub("\r\n", "\n").strip
+    UI.user_error!("Changelog is empty") if text.empty?
+    text = text[0, 500].rstrip if text.length > 500
+    text
+  end
+
+  def write_versioned_changelog!(version_code, whatsnew, locales = %w[en-US en-GB])
+    locales.each do |locale|
+      dir  = File.join(FASTLANE_DIR, "metadata", "android", locale, "changelogs")
+      file = File.join(dir, "#{version_code}.txt")
+      FileUtils.mkdir_p(dir)
+      File.write(file, "#{whatsnew}\n", mode: "w:UTF-8")
+    end
+  end
+
+  def find_bundle_dir!(flavor)
+    base = File.join(PROJECT_ROOT, "app_#{flavor}", "build", "outputs", "bundle")
+    UI.user_error!("Bundle output base not found: #{base}") unless Dir.exist?(base)
+    cand = [File.join(base, "release")] + Dir[File.join(base, "*")]
+    with_meta = cand.find { |d| File.exist?(File.join(d, "output-metadata.json")) }
+    return with_meta if with_meta
+    with_aab = cand.find { |d| !Dir[File.join(d, "*.aab")].empty? }
+    return with_aab if with_aab
+    UI.user_error!("No bundle dir for app_#{flavor}")
+  end
+
+  def build_and_upload_internal(flavor, version_code:, whatsnew: nil)
+    package = COUNTRIES[flavor]
+    UI.user_error!("Unknown flavor: #{flavor}") unless package
+
+    gradle(task: "clean")
+    gradle(task: "app_#{flavor}:bundleRelease")
+
+    bundle_dir = find_bundle_dir!(flavor)
+    whatsnew ||= read_default_whatsnew!
+    write_versioned_changelog!(version_code, whatsnew, %w[en-US en-GB])
+
+    aab = Dir[File.join(bundle_dir, "*.aab")].first
+    UI.user_error!("AAB not found for #{flavor}") unless aab && File.exist?(aab)
+
+    upload_to_play_store(
+      track: 'internal',
+      aab: aab,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_apk: true,
+      skip_upload_changelogs: false,
+      metadata_path: File.join(FASTLANE_DIR, 'metadata', 'android'),
+      package_name: package
+    )
+  end
+
+  # ---------------------------
+  # Internal upload lanes
+  # ---------------------------
+  desc "Upload ALL to Internal"
+  lane :releaseAll do |opts|
+    vc = get_version_code!(opts)
+    whatsnew = read_default_whatsnew!
+    COUNTRIES.keys.each do |flavor|
+      build_and_upload_internal(flavor, version_code: vc, whatsnew: whatsnew)
+    end
+  end
+
+  COUNTRIES.each_key do |flavor|
+    desc "Upload #{flavor} to Internal"
+    lane "release_#{flavor}".to_sym do |opts|
+      vc = get_version_code!(opts)
+      whatsnew = read_default_whatsnew!
+      build_and_upload_internal(flavor, version_code: vc, whatsnew: whatsnew)
+    end
+  end
+
+  # ---------------------------
+  # Production rollout lanes
+  # ---------------------------
+  desc "Rollout ALL to Production"
+  lane :rolloutAll do |opts|
+    version_code = opts[:version_code].to_i
+    mode    = (opts[:mode] || :promote).to_sym
+    rollout = opts[:rollout].to_s
+    COUNTRIES.each do |flavor, package|
+      init_rollout_prod(value: flavor, package_override: package, version_code: version_code, mode: mode, rollout: rollout)
+    end
+  end
+
+  COUNTRIES.each_key do |flavor|
+    desc "Rollout #{flavor} to Production"
+    lane "rollout_#{flavor}".to_sym do |opts|
+      version_code = opts[:version_code].to_i
+      mode    = (opts[:mode] || :promote).to_sym
+      rollout = opts[:rollout].to_s
+      init_rollout_prod(value: flavor, version_code: version_code, mode: mode, rollout: rollout)
+    end
+  end
+
+  lane :init_rollout_prod do |schema|
+    flavor  = schema[:value]
+    package = schema[:package_override] || COUNTRIES[flavor]
+    version_code = schema[:version_code].to_i
+    mode         = schema[:mode].to_sym
+    rollout      = schema[:rollout].to_s
+
+    if mode == :promote
+      UI.header("Promote Internal → Production | #{flavor} | rollout=#{rollout}")
+      supply(track: 'internal', track_promote_to: 'production', rollout: rollout,
+             skip_upload_metadata: true, skip_upload_images: true,
+             skip_upload_screenshots: true, skip_upload_changelogs: true,
+             package_name: package)
+    else
+      UI.header("Direct Production rollout | #{flavor} | version_code=#{version_code} | rollout=#{rollout}")
+      supply(track: 'production', version_code: version_code, rollout: rollout,
+             skip_upload_metadata: true, skip_upload_images: true,
+             skip_upload_screenshots: true, skip_upload_changelogs: true,
+             package_name: package)
+    end
+    UI.success("Done: #{flavor} (#{package})")
+  end
+end
